@@ -41,7 +41,14 @@ jobs:
           sys.path.insert(0, "Matcha-TTS")
           from matcha.models.matcha_tts import MatchaTTS
           steps = int(sys.argv[1])
-          model = MatchaTTS.load_from_checkpoint("matcha_urdu.ckpt", map_location="cpu").eval()
+          # Read real sizes from the weights (the Urdu checkpoint's saved settings are stale)
+          sd = torch.load("matcha_urdu.ckpt", map_location="cpu")["state_dict"]
+          fix = {"n_vocab": sd["encoder.emb.weight"].shape[0]}
+          if "spk_emb.weight" in sd:
+              fix["n_spks"] = sd["spk_emb.weight"].shape[0]
+              fix["spk_emb_dim"] = sd["spk_emb.weight"].shape[1]
+          print("Overrides:", fix)
+          model = MatchaTTS.load_from_checkpoint("matcha_urdu.ckpt", map_location="cpu", **fix).eval()
           print("n_vocab:", model.n_vocab, "| speakers:", model.n_spks, "| steps:", steps)
           def fwd(x, x_lengths, scales):
               out = model.synthesise(x, x_lengths, n_timesteps=steps,
