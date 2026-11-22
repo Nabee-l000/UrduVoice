@@ -1,15 +1,17 @@
 name: Build APK
 on: [push, workflow_dispatch]
+
+env:
+  # Fewer steps = faster speech. 10 = original, 3 = ~3x faster, 2 = fastest
+  MATCHA_STEPS: '3'
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: unzip -q UrduVoice.zip
-      - uses: actions/setup-java@v4
-        with: {distribution: temurin, java-version: '17'}
-      - uses: gradle/actions/setup-gradle@v4
-        with: {gradle-version: '8.7'}
+      - run: unzip -q -o UrduVoice.zip
+
       - name: Download voice models
         run: |
           mkdir -p UrduVoice/app/src/main/assets
@@ -17,9 +19,37 @@ jobs:
           curl -fL --retry 3 -o matcha_tts.onnx https://huggingface.co/AhsanTalal/urdu-matcha-tts/resolve/main/matcha_tts.onnx
           curl -fL --retry 3 -o vocab.json https://huggingface.co/AhsanTalal/urdu-matcha-tts/resolve/main/vocab.json
           curl -fL --retry 3 -o vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.10'}
+
+      # Re-export the Urdu model with fewer steps (faster). If this fails,
+      # the build still continues with the original 10-step model.
+      - name: Make faster model (${{ env.MATCHA_STEPS }} steps)
+        id: fast
+        continue-on-error: true
+        run: |
+          pip install -q torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q "numpy<2" onnx matcha-tts
+          curl -fL --retry 3 -o matcha_urdu.ckpt https://huggingface.co/AhsanTalal/urdu-matcha-tts/resolve/main/matcha_urdu.ckpt
+          python -m matcha.onnx.export matcha_urdu.ckpt matcha_fast.onnx --n-timesteps $MATCHA_STEPS
+          python -c "import onnx; m=onnx.load('matcha_fast.onnx'); print('inputs:', [i.name for i in m.graph.input])"
+          mv matcha_fast.onnx UrduVoice/app/src/main/assets/matcha_tts.onnx
+
+      - name: Which model is used
+        run: |
+          echo "Fast model step result: ${{ steps.fast.outcome }}"
+          ls -lh UrduVoice/app/src/main/assets
+
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: '8.7'}
+
       - name: Build
         working-directory: UrduVoice
         run: gradle assembleRelease --no-daemon --stacktrace
+
       - uses: actions/upload-artifact@v4
         with:
           name: UrduVoice-apk
