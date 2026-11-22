@@ -29,11 +29,43 @@ jobs:
         id: fast
         continue-on-error: true
         run: |
-          pip install -q torch==2.2.2 torchaudio==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
-          pip install -q "numpy<2" onnx matcha-tts
+          pip install -q torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q "numpy<2" onnx lightning hydra-core omegaconf rich einops conformer==0.3.2 \
+            diffusers==0.25.0 "huggingface_hub<0.26" matplotlib gdown wget scipy soundfile
+          git clone -q --depth 1 https://github.com/shivammehta25/Matcha-TTS
+          # Training-only C extension: not needed for export, replace with a stub
+          printf 'def maximum_path_c(*a, **k):\n    raise NotImplementedError\n' > Matcha-TTS/matcha/utils/monotonic_align/core.py
           curl -fL --retry 3 -o matcha_urdu.ckpt https://huggingface.co/AhsanTalal/urdu-matcha-tts/resolve/main/matcha_urdu.ckpt
-          python -m matcha.onnx.export matcha_urdu.ckpt matcha_fast.onnx --n-timesteps $MATCHA_STEPS
-          python -c "import onnx; m=onnx.load('matcha_fast.onnx'); print('inputs:', [i.name for i in m.graph.input])"
+          cat > export_fast.py <<'EOF'
+          import sys, torch
+          sys.path.insert(0, "Matcha-TTS")
+          from matcha.models.matcha_tts import MatchaTTS
+          steps = int(sys.argv[1])
+          model = MatchaTTS.load_from_checkpoint("matcha_urdu.ckpt", map_location="cpu").eval()
+          print("n_vocab:", model.n_vocab, "| speakers:", model.n_spks, "| steps:", steps)
+          def fwd(x, x_lengths, scales):
+              out = model.synthesise(x, x_lengths, n_timesteps=steps,
+                                     temperature=scales[0], length_scale=scales[1])
+              return out["mel"], out["mel_lengths"]
+          model.forward = fwd
+          x = torch.randint(1, 20, (1, 51), dtype=torch.long)
+          torch.onnx.export(model, (x, torch.LongTensor([51]), torch.tensor([0.667, 1.0])),
+              "matcha_fast.onnx", opset_version=17,
+              input_names=["x", "x_lengths", "scales"], output_names=["mel", "mel_lengths"],
+              dynamic_axes={"x": {0: "N", 1: "L"}, "x_lengths": {0: "N"},
+                            "mel": {0: "N", 2: "T"}, "mel_lengths": {0: "N"}})
+          print("Exported OK")
+          EOF
+          python export_fast.py $MATCHA_STEPS
+          python -c "import onnxruntime" 2>/dev/null || pip install -q onnxruntime
+          python - <<'EOF'
+          import numpy as np, onnxruntime as ort, time
+          s = ort.InferenceSession("matcha_fast.onnx")
+          x = np.zeros((1, 41), dtype=np.int64); x[0, 1::2] = 5
+          t = time.time()
+          mel = s.run(None, {"x": x, "x_lengths": np.array([41]), "scales": np.array([0.667, 1.0], dtype=np.float32)})[0]
+          print("Test run OK, mel shape", mel.shape, "in", round((time.time()-t)*1000), "ms")
+          EOF
           mv matcha_fast.onnx UrduVoice/app/src/main/assets/matcha_tts.onnx
 
       - name: Which model is used
