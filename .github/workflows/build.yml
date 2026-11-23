@@ -8,7 +8,7 @@ env:
   # the same in the Colab test lab.
   QUANTIZE: 'false'
   # English engine version (https://github.com/k2-fsa/sherpa-onnx/releases)
-  SHERPA_VERSION: '1.13.7'
+  SHERPA_VERSION: '1.12.15'   # bundles ONNX Runtime 1.17.1, which exists for Android on Maven
 
 jobs:
   build:
