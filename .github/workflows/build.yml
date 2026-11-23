@@ -4,6 +4,9 @@ on: [push, workflow_dispatch]
 env:
   # Fewer steps = faster speech. 10 = original, 3 = ~3x faster, 2 = fastest
   MATCHA_STEPS: '3'
+  # 'true' = shrink the Urdu model to 8-bit (~half size). Only turn on after it sounded
+  # the same in the Colab test lab.
+  QUANTIZE: 'false'
 
 jobs:
   build:
@@ -75,9 +78,24 @@ jobs:
           EOF
           mv matcha_fast.onnx UrduVoice/app/src/main/assets/matcha_tts.onnx
 
+      - name: Shrink model (INT8)
+        if: env.QUANTIZE == 'true'
+        id: quant
+        continue-on-error: true
+        run: |
+          pip install -q onnx onnxruntime
+          python - <<'EOF'
+          from onnxruntime.quantization import quantize_dynamic, QuantType
+          quantize_dynamic("UrduVoice/app/src/main/assets/matcha_tts.onnx", "q.onnx",
+                           weight_type=QuantType.QUInt8, op_types_to_quantize=["MatMul", "Gemm"])
+          EOF
+          mv q.onnx UrduVoice/app/src/main/assets/matcha_tts.onnx
+
       - name: Which model is used
         run: |
           echo "Fast model step result: ${{ steps.fast.outcome }}"
+          echo "Shrink step result: ${{ steps.quant.outcome || 'off' }}"
+          grep -m1 versionName UrduVoice/app/build.gradle.kts
           ls -lh UrduVoice/app/src/main/assets
 
       - uses: actions/setup-java@v4
