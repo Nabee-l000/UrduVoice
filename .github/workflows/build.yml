@@ -1,4 +1,4 @@
-name: Build APK v3
+name: Build APK
 on: [push, workflow_dispatch]
 
 env:
@@ -7,6 +7,8 @@ env:
   # 'true' = shrink the Urdu model to 8-bit (~half size). Only turn on after it sounded
   # the same in the Colab test lab.
   QUANTIZE: 'false'
+  # English engine version (https://github.com/k2-fsa/sherpa-onnx/releases)
+  SHERPA_VERSION: '1.13.7'
 
 jobs:
   build:
@@ -22,6 +24,34 @@ jobs:
           curl -fL --retry 3 -o matcha_tts.onnx https://huggingface.co/AhsanTalal/urdu-matcha-tts/resolve/main/matcha_tts.onnx
           curl -fL --retry 3 -o vocab.json https://huggingface.co/AhsanTalal/urdu-matcha-tts/resolve/main/vocab.json
           curl -fL --retry 3 -o vocos-22khz-univ.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+      # English voice: sherpa-onnx engine + Piper LJSpeech voice (public domain)
+      - name: Download English engine and voice
+        id: english
+        run: |
+          mkdir -p UrduVoice/app/libs
+          curl -fL --retry 3 -o UrduVoice/app/libs/sherpa-onnx.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/sherpa-onnx-${SHERPA_VERSION}.aar
+          # Find the ONNX Runtime version inside sherpa-onnx so ours matches exactly
+          unzip -q -o UrduVoice/app/libs/sherpa-onnx.aar jni/arm64-v8a/libonnxruntime.so -d /tmp/sherpa
+          ORT=$(strings /tmp/sherpa/jni/arm64-v8a/libonnxruntime.so | grep -m1 -oE '^1\.[0-9]+\.[0-9]+$')
+          echo "ONNX Runtime inside sherpa-onnx: $ORT"
+          echo "ort=$ORT" >> "$GITHUB_OUTPUT"
+          curl -sfI "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/$ORT/onnxruntime-android-$ORT.aar" >/dev/null \
+            && echo "onnxruntime-android $ORT found on Maven" \
+            || echo "::warning::onnxruntime-android $ORT not on Maven Central - build may fail"
+          # English voice files
+          curl -fL --retry 3 -o en.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-ljspeech-medium.tar.bz2
+          tar xjf en.tar.bz2
+          D=UrduVoice/app/src/main/assets/english
+          mkdir -p $D
+          mv vits-piper-en_US-ljspeech-medium/en_US-ljspeech-medium.onnx $D/en.onnx
+          mv vits-piper-en_US-ljspeech-medium/tokens.txt $D/tokens.txt
+          mv vits-piper-en_US-ljspeech-medium/espeak-ng-data $D/espeak-ng-data
+          # Keep only English pronunciation data (19 MB -> ~2 MB)
+          find $D/espeak-ng-data -maxdepth 1 -name '*_dict' ! -name 'en_dict' -delete
+          du -sh $D $D/*
 
       - uses: actions/setup-python@v5
         with: {python-version: '3.10'}
@@ -97,15 +127,16 @@ jobs:
           echo "Shrink step result: ${{ steps.quant.outcome || 'off' }}"
           grep -m1 versionName UrduVoice/app/build.gradle.kts
           ls -lh UrduVoice/app/src/main/assets
+          echo "ONNX Runtime version: ${{ steps.english.outputs.ort }}"
 
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: gradle/actions/setup-gradle@v4
-        with: {gradle-version: '8.7'}
+        with: {gradle-version: '8.9'}
 
       - name: Build
         working-directory: UrduVoice
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace -PortVersion=${{ steps.english.outputs.ort }}
 
       - uses: actions/upload-artifact@v4
         with:
